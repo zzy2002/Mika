@@ -1,0 +1,37 @@
+{
+  "base_repository": "wangzan101/Mika",
+  "base_commit": "d6bdb3aa3066fcfd482c10fc8e258553dc360dcc",
+  "head_repository": "zzy2002/Mika",
+  "head_commit": "521bfddf",
+  "device": {
+    "type": "Android emulator",
+    "api": 35,
+    "width_px": 720,
+    "height_px": 1600,
+    "density": 2
+  },
+  "capture": {
+    "date": "2026-11-16",
+    "fixture": "DrawerComparisonCaptureTest.kt",
+    "content": "synthetic conversations only",
+    "same_fixture_on_base_and_head": true,
+    "themes": [
+      "light",
+      "dark"
+    ],
+    "animations": "disabled for stable final-state screenshots"
+  },
+  "validation": {
+    "app_jvm_tests": 2648,
+    "app_jvm_failures": 0,
+    "ui_regression_tests": 29,
+    "ui_capture_tests": 1,
+    "ui_failures": 0
+  },
+  "images": {
+    "after-dark.png": "be894070e842f0c3608be5bdb4a7103f635c6c59f5fb3a7993d605015cd826a1",
+    "after-light.png": "f6631ca75327613bc7ffe0498b38529549b0240337cbf7423e56f11c97d8b4dc",
+    "before-dark.png": "82810c39410b6bc1a80738849b09ce8588f9e04479143724a6e6e75d9e8913f5",
+    "before-light.png": "1d2a26d20409acccd4236e5426ec7110a0d38e80cd395ea96848dae765002bed"
+  }
+}
