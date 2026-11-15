@@ -1,5 +1,7 @@
 package com.wangzan101.mika.ui
 
+import com.wangzan101.mika.personal.PERSONAL_WORKSPACE
+import com.wangzan101.mika.chat.ConversationSummary
 import com.wangzan101.mika.R
 import com.wangzan101.mika.i18n.tr
 import androidx.compose.foundation.clickable
@@ -109,7 +111,10 @@ fun AdvancedSettings() {
     var network by remember { mutableStateOf(state.networkAllowed) }
     val app = context.applicationContext as MikaApp
     val usageReader = remember {
-        SandboxUsageReader(SandboxDirs(context), { app.conversations.list(includeArchived = true) }, { app.taskState.activeConversations.value })
+        SandboxUsageReader(SandboxDirs(context), {
+            app.conversations.list(includeArchived = true) +
+                ConversationSummary(PERSONAL_WORKSPACE, context.getString(R.string.drawer_personal), 0L)
+        }, { app.taskState.activeConversations.value })
     }
     var usage by remember { mutableStateOf<SandboxUsage?>(null) }
     var reload by remember { mutableIntStateOf(0) }

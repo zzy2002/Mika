@@ -1,5 +1,6 @@
 package com.wangzan101.mika.core.personal
 
+import com.wangzan101.mika.core.agent.AttachmentLines
 import com.wangzan101.mika.core.agent.TokenEstimate
 import com.wangzan101.mika.core.model.*
 import kotlinx.coroutines.*
@@ -81,6 +82,10 @@ interface PersonalActions {
     fun cancel(conversationId: String): String
     fun remember(text: String, quote: String): String
     fun memory(): String
+    suspend fun startWithAttachments(conversationId: String, goal: String, files: List<Pair<String, String>>) =
+        start(conversationId, AttachmentLines.compose(goal, files))
+    suspend fun reviseWithAttachments(conversationId: String, instruction: String, files: List<Pair<String, String>>): String =
+        revise(conversationId, AttachmentLines.compose(instruction, files))
 }
 
 class PersonalAgent(
@@ -281,10 +286,17 @@ class PersonalAgent(
         return summary
     }
 
-    private fun execute(call: Part.ToolCall, source: PersonalMessage): String {
+    private suspend fun execute(call: Part.ToolCall, source: PersonalMessage): String {
         val args = Json.parseToJsonElement(call.argsJson).jsonObject
         fun arg(name: String) = args[name]?.jsonPrimitive?.content?.trim().orEmpty()
         fun owned() = state.value.tasks.find { it.id == arg("task_id") } ?: error("找不到这项个人助手任务。")
+        fun attachments(instruction: String): List<Pair<String, String>> {
+            val current = AttachmentLines.parse(source.text).files
+            val referenced = state.value.messages.filter { it.role == "user" }.flatMap {
+                AttachmentLines.parse(it.text).files
+            }.filter { (path, _) -> instruction.contains(path) }
+            return (current + referenced).distinctBy { it.first }
+        }
         return when (call.name) {
             "delegate_task" -> {
                 val goal = arg("goal").also { require(it.isNotBlank() && it.length <= 12_000) { "任务目标不能为空或过长。" } }
@@ -292,7 +304,7 @@ class PersonalAgent(
                 if (existing != null) return jsonResult("task_id", existing.id)
                 val task = PersonalTask(ids(), ids(), arg("title").ifBlank { goal.take(36) }.take(80), goal, source.id, clock())
                 store.update { it.copy(tasks = it.tasks + task, messages = it.messages + entry("task", task.title, task.id)) }
-                try { actions.start(task.conversationId, goal) }
+                try { actions.startWithAttachments(task.conversationId, goal, attachments(goal)) }
                 catch (e: Exception) { updateTask(task.id, "failed", result = e.message ?: "任务启动失败", resultSystemType = if (e.message == null) "task_start_failed" else null); throw e }
                 jsonResult("task_id", task.id)
             }
@@ -300,7 +312,7 @@ class PersonalAgent(
                 val task = owned()
                 require(!task.terminal) { "这项任务已经结束，需要继续时请创建新任务。" }
                 val instruction = arg("instruction").also { require(it.isNotBlank()) }
-                val result = actions.revise(task.conversationId, instruction)
+                val result = actions.reviseWithAttachments(task.conversationId, instruction, attachments(instruction))
                 store.update { s -> s.copy(tasks = s.tasks.map { if (it.id == task.id) it.copy(detail = "补充：" + instruction, detailSystemType = "task_amendment") else it }) }
                 jsonResult("result", result)
             }
@@ -324,6 +336,7 @@ class PersonalAgent(
     private fun system(s: PersonalState, memory: String, latestMessageAt: Long) = """
 你是 Mika，是用户长期交流的个人助手。自然、简洁地接话，中文交流时用中文。
 用户可以连续发消息、换话题。讨论、倾诉和构思用聊天回应；明确交代需要上网、操作手机、文件、计算等行动时，调用 delegate_task 交给独立任务。按实际进展接话，避免重复播报任务受理状态，不假装获得未返回的结果。
+用户附件在消息末尾列出路径和大小。你不能直接读取附件内容；需要查看、分析照片或文件时委派后台任务，并在目标中保留相关附件的完整路径（引用早先附件也一样）。不能只凭文件名猜测内容。
 消息时间、任务状态、内部编号和工具回执仅用于理解上下文。直接回复用户，不在回复里加这些字段或回执。用户询问时间时用自然语言回答。
 任务在后台运行时，聊天仍然继续。明确补充某项任务才用 revise_task；新话题不要变成任务插话。任务编号以这里的真实编号为准。停止需 cancel_task。需要接管、批准或回答时，引导用户点任务卡进入处理。
 区分“想做”“决定做”“授权你做”。不把随口提到的想法变成任务或计划。不主动发送聊天消息，不擅自创建周期任务。

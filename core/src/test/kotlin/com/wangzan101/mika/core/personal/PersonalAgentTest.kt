@@ -90,6 +90,30 @@ class PersonalAgentTest {
         assertTrue(store.state.value.tasks.single().delivered)
     }
 
+    @Test fun delegatesCurrentAttachmentsEvenWhenModelOmitsPaths() = runTest {
+        val store = Store()
+        val actions = Actions()
+        var invocation = 0
+        val agent = PersonalAgent(store, backgroundScope, { Model {
+            if (invocation++ == 0) call("c1", "delegate_task", """{"title":"分析","goal":"分析附件"}""") else text("正在分析")
+        } }, actions)
+        agent.send("分析一下\n附件:/workspace/inbox/report.csv(12 B)"); runCurrent()
+        assertEquals("分析附件\n附件:/workspace/inbox/report.csv(12 B)", actions.started.single().second)
+    }
+
+    @Test fun forwardsReferencedHistoricalAttachmentButExcludesUnrelatedFiles() = runTest {
+        val history = PersonalMessage("prior", "user", "附件:/workspace/inbox/old.txt(4 B)\n附件:/workspace/inbox/private.txt(8 B)", 1L)
+        val task = PersonalTask("owned", "thread", "分析", "分析", "user", 1L, status = "running")
+        val store = Store(PersonalState(messages = listOf(history), tasks = listOf(task)))
+        val actions = Actions()
+        var invocation = 0
+        val agent = PersonalAgent(store, backgroundScope, { Model {
+            if (invocation++ == 0) call("c1", "revise_task", """{"task_id":"owned","instruction":"再看 /workspace/inbox/old.txt"}""") else text("继续分析")
+        } }, actions)
+        agent.send("把之前的文件也看一下"); runCurrent()
+        assertEquals("再看 /workspace/inbox/old.txt\n附件:/workspace/inbox/old.txt(4 B)", actions.revised.single().second)
+    }
+
     @Test fun explicitAmendmentTargetsOwnedTaskWithoutCreatingNewOne() = runTest {
         val task = PersonalTask("owned", "thread", "资料", "查资料", "user", 1L, status = "running", detail = "等待开始", detailSystemType = "waiting")
         val store = Store(PersonalState(tasks = listOf(task)))

@@ -22,6 +22,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.listSaver
+import com.wangzan101.mika.cap.sandbox.AttachmentFailure
+import com.wangzan101.mika.core.agent.AttachmentLines
+import com.wangzan101.mika.personal.PERSONAL_WORKSPACE
+import kotlinx.coroutines.CancellationException
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -118,6 +123,14 @@ fun PersonalAgentScreen(
     val scope = rememberCoroutineScope()
     val keyboard = LocalSoftwareKeyboardController.current
     var draft by rememberSaveable { mutableStateOf("") }
+    var attachments by rememberSaveable(stateSaver = listSaver<List<PendingAttachment>, String>(
+        save = { items -> items.flatMap { listOf(it.uri, it.name, it.size.toString(), it.workspacePath.orEmpty()) } },
+        restore = { values -> values.chunked(4).map { PendingAttachment(it[0], it[1], it[2].toLong(),
+            workspaceConversationId = PERSONAL_WORKSPACE, workspacePath = it[3]) } },
+    )) { mutableStateOf(emptyList()) }
+    var importing by remember { mutableStateOf(false) }
+    var rejected by remember { mutableStateOf(emptyList<AttachmentFailure>()) }
+    var overLimit by remember { mutableIntStateOf(0) }
     var voiceHolding by remember { mutableStateOf(false) }
     var profile by rememberSaveable { mutableStateOf(false) }
     var selectedTask by rememberSaveable { mutableStateOf<String?>(null) }
@@ -144,18 +157,51 @@ fun PersonalAgentScreen(
     val dayFormat = personalDayFormat()
     val context = LocalContext.current
     val sendFailed = stringResource(R.string.personal_send_failed)
+    fun removeAttachment(uri: String) {
+        if (importing) return
+        attachments.firstOrNull { it.uri == uri }?.workspacePath?.let(runtime::discardAttachment)
+        attachments = attachments.filterNot { it.uri == uri }
+    }
+    fun pickAttachments(uris: List<String>) {
+        if (importing || uris.isEmpty()) return
+        importing = true
+        rejected = emptyList()
+        overLimit = 0
+        scope.launch {
+            try {
+                val described = AttachFiles.describe(context, uris)
+                val (all, dropped) = AttachTray.add(attachments, described)
+                overLimit = dropped
+                for (item in all.filter { candidate -> attachments.none { it.uri == candidate.uri } }) {
+                    val result = runtime.importAttachment(item.uri)
+                    rejected = rejected + result.failures
+                    result.added.singleOrNull()?.let { (path, size) ->
+                        attachments = attachments + item.copy(size = size, workspaceConversationId = PERSONAL_WORKSPACE, workspacePath = path)
+                    }
+                }
+            } catch (e: CancellationException) { throw e
+            } catch (e: Exception) { sendError = e.message ?: sendFailed
+            } finally { importing = false }
+        }
+    }
     fun send() {
+        if (!AttachTray.canSend(draft, attachments, importing)) return
         val text = draft.trim()
-        if (text.isEmpty()) return
+        val submitted = attachments
+        val message = AttachmentLines.composeBytes(text, submitted.map { it.workspacePath!! to it.size })
         draft = ""
         keyboard?.hide()
         followLatest = true
+        importing = true
         scope.launch {
-            runCatching { runtime.send(text) }
-                .onFailure {
-                    draft = text
-                    sendError = personalSystemText(context, (it as? PersonalSystemException)?.systemType, it.message ?: sendFailed)
-                }
+            try {
+                runtime.send(message)
+                attachments = attachments.filterNot { item -> submitted.any { it.uri == item.uri } }
+            } catch (e: CancellationException) { throw e
+            } catch (e: Exception) {
+                if (draft.isBlank()) draft = text
+                sendError = personalSystemText(context, (e as? PersonalSystemException)?.systemType, e.message ?: sendFailed)
+            } finally { importing = false }
         }
     }
     LaunchedEffect(list) {
@@ -214,7 +260,20 @@ fun PersonalAgentScreen(
                             .background(if (user) c.accent else c.answer, if (user) MikaShapes.UserBubble else MikaShapes.AnswerBubble)
                             .padding(horizontal = 14.dp, vertical = 10.dp)
                         if (user) {
-                            Text(message.text, bubble, style = MikaType.Body, color = c.onAccent)
+                            val attached = remember(message.text) { AttachmentMessage.parse(message.text) }
+                            if (attached.hasAttachments) {
+                                BoxWithConstraints(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
+                                    SentAttachments(attached, PERSONAL_WORKSPACE, maxWidth * 0.8f) { item ->
+                                        scope.launch {
+                                            if (!AttachFiles.openSent(context, PERSONAL_WORKSPACE, item.path)) {
+                                                android.widget.Toast.makeText(context, AttachCopy.GONE, android.widget.Toast.LENGTH_SHORT).show()
+                                            }
+                                        }
+                                    }
+                                }
+                                if (attached.words.isNotBlank()) Spacer(Modifier.height(6.dp))
+                            }
+                            if (attached.words.isNotBlank()) Text(attached.words, bubble, style = MikaType.Body, color = c.onAccent)
                         } else {
                             MarkdownText(message.displayText(context), MikaType.Body.copy(color = if (message.error) c.bad else c.ink), bubble)
                         }
@@ -236,6 +295,22 @@ fun PersonalAgentScreen(
             hasHistory = messages.isNotEmpty(),
             onSend = ::send,
             onStop = {},
+            attachPanel = {
+                AttachPanelHost(attachments, onPicked = ::pickAttachments, onToggle = { item ->
+                    when {
+                        importing -> true
+                        attachments.any { it.uri == item.uri } -> { removeAttachment(item.uri); true }
+                        attachments.size >= AttachTray.LIMIT -> false
+                        else -> { pickAttachments(listOf(item.uri)); true }
+                    }
+                })
+            },
+            attachments = attachments,
+            importing = importing,
+            rejected = rejected,
+            overLimit = overLimit,
+            onRemove = ::removeAttachment,
+            onDismissRejected = { rejected = emptyList(); overLimit = 0 },
             reduceMotion = reduceMotion,
             voice = voice,
             onVoiceText = { draft = HoldToTalk.join(draft, it) },

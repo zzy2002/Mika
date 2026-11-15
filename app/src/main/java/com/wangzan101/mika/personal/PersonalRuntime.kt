@@ -1,10 +1,15 @@
 package com.wangzan101.mika.personal
 
 import android.graphics.Bitmap
+import android.net.Uri
+import com.wangzan101.mika.cap.sandbox.Attachments
+import com.wangzan101.mika.cap.sandbox.AndroidSandbox
+import com.wangzan101.mika.cap.sandbox.SandboxDirs
 import android.util.AtomicFile
 import com.wangzan101.mika.MikaApp
 import com.wangzan101.mika.capsule.previewFrames
 import com.wangzan101.mika.capsule.sameFrame
+import com.wangzan101.mika.core.agent.AttachmentLines
 import com.wangzan101.mika.core.agent.TaskState
 import com.wangzan101.mika.core.memory.*
 import com.wangzan101.mika.core.model.ModelRole
@@ -68,7 +73,34 @@ class PersonalRuntime(private val app: MikaApp) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     val store = FilePersonalStore(File(app.filesDir, "personal/main-v1.json"))
     private val replays by lazy { PersonalReplayStore(File(app.filesDir, "personal/replays")) }
+    private val attachmentDirs by lazy { SandboxDirs(app) }
+    internal suspend fun importAttachment(uri: String) = Attachments.importInto(
+        app, listOf(Uri.parse(uri)), attachmentDirs.workspace(PERSONAL_WORKSPACE),
+        attachmentDirs.gate, attachmentDirs.tree,
+        freeBytes = { app.filesDir.usableSpace },
+        workspaceBytes = { AndroidSandbox.treeBytes(attachmentDirs.workspace(PERSONAL_WORKSPACE).toPath()) },
+    )
+    internal fun discardAttachment(path: String) {
+        scope.launch {
+            submit.withLock {
+                attachmentDirs.tree.shared {
+                    val sent = state.value.messages.any { message ->
+                        message.role == "user" && AttachmentLines.parse(message.text).files.any { it.first == path }
+                    }
+                    if (!sent) runCatching {
+                        attachmentDirs.gate.delete(attachmentDirs.workspace(PERSONAL_WORKSPACE), path.removePrefix("/workspace/"), under = "inbox")
+                    }
+                }
+            }
+        }
+    }
     private val actions = object : PersonalActions {
+        override suspend fun startWithAttachments(conversationId: String, goal: String, files: List<Pair<String, String>>) {
+            withPersonalAttachments(attachmentDirs, conversationId, goal, files) { start(conversationId, it) }
+        }
+        override suspend fun reviseWithAttachments(conversationId: String, instruction: String, files: List<Pair<String, String>>): String =
+            withPersonalAttachments(attachmentDirs, conversationId, instruction, files) { revise(conversationId, it) }
+
         override fun start(conversationId: String, goal: String) {
             app.conversations.setTitle(conversationId, goal.take(50))
             TaskService.start(app, goal, conversationId)
